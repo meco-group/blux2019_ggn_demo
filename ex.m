@@ -1,7 +1,17 @@
+% Solve an unconstrained convex-over-nonlinear problem
+%
+%  min   Phi(F(w))
+%   w
+%
+%  The example considers a parameter estimation problem with
+%    - F    defined by a simulation of a nonlinear system
+%    - Phi  defined to be Huber-like
+%
+% See: blux.casadi.org
+
 import casadi.*
 
 %% Set-up a nonlinear fitting problem F(w)
-
 % Unknown parmeters of dynamic system
 a     = MX.sym('a');
 b     = MX.sym('b');
