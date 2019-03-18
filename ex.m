@@ -55,24 +55,54 @@ Phi = Function('Phi',{E},{sum(sqrt(1^2+E.^2))/200})
 % Total objective: R^6 -> R
 f = Function('f',{w},{Phi(F(w))});
 
-%% Solve using GGN
-
 % Gradient of f wrt w: R^6 -> R^6
 f_grad = Function('f',{w},{gradient(f(w),w)});
 
 % Jacobian of F wrt w: R^6 -> R^(200x6)
 J    = Function('J',{w},{jacobian(F(w),w)})
+
+%% Solve using GGN
+
 % Hessian of Phi map: R^200 -> R^(200x200)
 HPhi = Function('HPhi',{E},{hessian(Phi(E),E)})
 % GGN Hessian: R^6 -> R^(6x6)
 BGGN = Function('BGGN',{w},{J(w)'*HPhi(F(w))*J(w)});
 
 w_exact = [1.4;0.80;0.3;0.02;0.04;0.02];
-w = w_exact*1.01;
+wk = w_exact*1.01;
 %w = [1.43;0.99;0.22;0.022;0.022;0.011];
-maxit = 20;
-for i=1:maxit
-    dw = full(-BGGN(w)\f_grad(w));
-    fprintf('it %d: ||dw|| %e\n',i,norm(dw));
-    w = w + dw;
+maxit = 8;
+for k=1:maxit
+    dw = full(-BGGN(wk)\f_grad(wk));
+    wk = wk + dw;
+    fprintf('GGN it %d: ||grad_f|| %e\n',k, full(norm(f_grad(wk))));
 end
+
+wk
+%% Solve using SCP
+
+wk = w_exact*1.01;
+for k=1:maxit
+    opti = Opti('conic');
+
+    dw = opti.variable(6);
+    s = opti.variable(100,1);
+
+    opti.minimize(sum(s));
+
+    F_lin = F(wk)+J(wk)*dw;
+    for i=1:100
+        opti.subject_to( norm([1; F_lin(i)]) <= s(i) );
+    end
+    options = struct;
+    options.superscs.max_iters = 1e5;
+    options.superscs.verbose = 0;
+    options.superscs.eps = 1e-6;
+    opti.solver('superscs',options);
+    sol = opti.solve();
+    
+    wk = wk + opti.value(dw);
+    fprintf('SCP it %d: ||grad_f|| %e\n',k, full(norm(f_grad(wk))));
+end
+
+wk
