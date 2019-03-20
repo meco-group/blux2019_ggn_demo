@@ -1,108 +1,182 @@
-% Solve an unconstrained convex-over-nonlinear problem
+% This example compares GGN and SCP to solve an optimization problem:
 %
-%  min   Phi(F(w))
+%  min   phi(w)
 %   w
+%      s.t.  G(w)=0
 %
-%  The example considers a parameter estimation problem with
-%    - F    defined by a simulation of a nonlinear system
-%    - Phi  defined to be Huber-like
+%  * w in R^nw
+%  * w contains both parameters-to-be-estimated and a state trajectory
+%  * G: gap-closing constraints from multiple-shooting with a system S
+%  * S: a nonlinear discrete system map (state x parameter)->(state)
+%  * y: a given matrix of (noisy) state measurements
+%  * phi: a convex map: Huber-like
+%         sum_i sqrt(sigma^2+E_i(w)^2)
 %
-% See: blux.casadi.org
+% See: benelux.casadi.org
 
+close all
+clc
 import casadi.*
 
-%% Set-up a nonlinear fitting problem F(w)
-% Unknown parmeters of dynamic system
-a     = MX.sym('a');
-b     = MX.sym('b');
+load('y.mat');
+figure
+hold on
+plot(y(1,:),'ro')
+plot(y(2,:),'bo')
+hold off
+%% Set-up a nonlinear fitting problem
+Ns    = 100; % Number of simulation steps (= number of observations)
+sigma = 0.1; % Huber tuning term
+
+% Unknown parameters of dynamic system
 alpha = MX.sym('alpha');
 beta  = MX.sym('beta');
 gamma = MX.sym('gamma');
 delta = MX.sym('delta');
-% w in R^6
-w = [a;b;alpha;beta;gamma;delta];
+p     = [alpha;beta;gamma;delta]; % p in R^4
 
 % Discrete-time nonlinear dynamic system (predator-prey)
-s = MX.sym('s',2); % s in R^2
-s_next = [(a*s(1)-alpha*s(1)*s(2))/(1+gamma*s(1));
-          (b*s(2)+beta*s(1)*s(2))/(1+delta*s(2))];
+x      = MX.sym('x',2); % symbolic state, in R^2
+x_next = [(x(1)-alpha*x(1)*x(2))/(1+gamma*x(1));
+          (x(2)+ beta*x(1)*x(2))/(1+delta*x(2))];
 
-% Function mapping from state (R^2) and parameter (R^6)
-%   to state after a timestep (R^2)
-m = Function('m',{s,w},{s_next})
+% System dynamics: R^2 (state) x R^4 (parameter) -> R^2 (state at next)
+S = Function('S',{x,p},{x_next})
 
-% Simulate over 100 time steps with symbolic w
-s = [10;0.1];
-y_sim = {};
-for i=1:100
-    s = m(s,w);
-    y_sim{end+1} = s;
-end
-y_sim = [y_sim{:}];
+X = MX.sym('X',2,Ns+1); % Symbolic state trajectory, in R^(2 x Ns+1)
 
-% Nonlinear map F: R^6 (parameters) -> R^200 (error between simulation and data)
-load('y.mat');
-error = (y_sim-y).*repmat([0.1;10],1,100);
-F = Function('F',{w},{error(:)});
+% Decision variable structure w in R^nw : nw = 4+2(Ns+1)
+w = [p;X(:)];
 
-%% Choosing a convex metric to optimize over
+size(y) % Noisy state observations R^(2 x Ns)
+% Error between state and observation: R^nw -> R^(2Ns)
+err = X(:,2:Ns+1)-y;
+E = Function('E',{w},{ err(:) });
 
-% Convex map Phi: R^200 (error vector) -> R (scalar matric)
-E = MX.sym('E',200);
-Phi = Function('Phi',{E},{sum(sqrt(1^2+E.^2))/200})
-%Phi = Function('Phi',{E},{E'*E})
+% Express multiple shooting gaps
+k = 1:Ns;
+mshooting_gaps = X(:,k+1)-S(X(:,k),p);
+size(mshooting_gaps) % Gaps are in R^(2 x Ns)
 
-% Total objective: R^6 -> R
-f = Function('f',{w},{Phi(F(w))});
+% Constraint: R^nw -> R^(2Ns)
+G = Function('G',{w},{ mshooting_gaps(:) })
 
-% Gradient of f wrt w: R^6 -> R^6
-f_grad = Function('f',{w},{gradient(f(w),w)});
+figure
+spy(jacobian(G(w),w))
+title('Constraint Jacobian: R^{nw} -> R^{2Ns x nw}')
+JG = Function('JG',{w},{ jacobian(G(w),w) });
 
-% Jacobian of F wrt w: R^6 -> R^(200x6)
-J    = Function('J',{w},{jacobian(F(w),w)})
+%% Initial w
 
-%% Solve using GGN
+% We have a vague idea of the values of p
+pinit = [0.03;0.25;0.35;0.05];
 
-% Hessian of Phi map: R^200 -> R^(200x200)
-HPhi = Function('HPhi',{E},{hessian(Phi(E),E)})
-% GGN Hessian: R^6 -> R^(6x6)
-BGGN = Function('BGGN',{w},{J(w)'*HPhi(F(w))*J(w)});
+% We can initialize with the measurements y!
+winit = [pinit;y(:,1);y(:)];
 
-w_exact = [1.4;0.80;0.3;0.02;0.04;0.02];
-wk = w_exact*1.01;
-%w = [1.43;0.99;0.22;0.022;0.022;0.011];
-maxit = 8;
-for k=1:maxit
-    dw = full(-BGGN(wk)\f_grad(wk));
-    wk = wk + dw;
-    fprintf('GGN it %d: ||grad_f|| %e\n',k, full(norm(f_grad(wk))));
-end
+%% SCP approach
 
-wk
-%% Solve using SCP
+% Jacobian of error Function: R^nw -> R^(2Ns x nw)
+JE = Function('JE',{w},{ jacobian(E(w),w) });
 
-wk = w_exact*1.01;
-for k=1:maxit
+wk = winit;
+for k=1:10
     opti = Opti('conic');
 
-    dw = opti.variable(6);
-    s = opti.variable(100,1);
-
+    % Decision variables of conic problem
+    dw = opti.variable(numel(w));
+    s  = opti.variable(2*Ns,1);   % Slack
+    
+    % Objective: sum of slacks
     opti.minimize(sum(s));
-
-    F_lin = F(wk)+J(wk)*dw;
-    for i=1:100
-        opti.subject_to( norm([1; F_lin(i)]) <= s(i) );
+    
+    % Second-order cone constraints,
+    %  arising from objective   sum_i sqrt(sigma^2+E_i(w)^2)
+    E_lin = E(wk)+JE(wk)*dw;
+    for i=1:2*Ns
+        opti.subject_to( norm([sigma;E_lin(i)]) <= s(i) );
     end
+
+    % Linear equality constraints (cfr. gap-closing multiple shooting)
+    G_lin = G(wk)+JG(wk)*dw;
+    opti.subject_to( G_lin==0 );
+
+    % Choose a conic solver
     options = struct;
     options.superscs.max_iters = 1e5;
-    options.superscs.verbose = 0;
-    options.superscs.eps = 1e-6;
+    options.superscs.verbose   = 0;
+    options.superscs.eps       = 1e-9;
     opti.solver('superscs',options);
-    sol = opti.solve();
     
-    wk = wk + opti.value(dw);
-    fprintf('SCP it %d: ||grad_f|| %e\n',k, full(norm(f_grad(wk))));
+    % Solve
+    sol = opti.solve();
+    dw  = sol.value(dw);
+    
+    % Take a full step
+    wk = wk+dw;
+    
+    fprintf('SCP it %d: ||dw|| %e\n',k, norm(dw));
 end
 
-wk
+p_opt_SCP = wk(1:4);
+
+%% GGN approach
+
+% Convex map: R^nw -> R
+phi  = Function('phi',{w},{ sum(sqrt(sigma^2+E(w).^2))/(2*Ns) });
+
+% Jacobian of phi: R^nw -> R^(1 x nw)
+Jphi = Function('Jphi',{w},{ jacobian(phi(w),w) }); % redact
+
+figure
+spy(hessian(phi(w),w))
+title('Hessian of phi: R^{nw} -> R^{nw x nw}')
+Hphi = Function('Hphi',{w},{ hessian(phi(w),w) }); % redact
+
+wk = winit;
+for k=1:10
+    opti = Opti('conic');
+
+    % Decision variables of quadratic problem
+    dw = opti.variable(numel(w));
+
+    % Quadratic approximation to objective
+    obj_lin = phi(wk)+Jphi(wk)*dw+1/2*dw'*Hphi(wk)*dw;  % redact
+    opti.minimize(obj_lin); % redact
+
+    % Linear equality constraints (cfr. multiple shooting)
+    G_lin = G(wk)+JG(wk)*dw;
+    opti.subject_to( G_lin==0 );
+
+    % Choose a QP solver
+    options = struct;
+    options.print_iter   = false;
+    options.print_header = false;
+    opti.solver('qrqp',options);
+    
+    % Solve
+    sol = opti.solve();
+    dw  = sol.value(dw);
+    
+    % Take a full step
+    wk = wk+dw;
+    
+    fprintf('GGN it %d: ||dw|| %e\n',k, norm(dw));
+end
+
+p_opt_GGN = wk(1:4);
+
+%% Comparison
+
+disp('Difference between p_opt_GGN and p_opt_SCP')
+p_opt_GGN-p_opt_SCP
+
+%% Plotting
+figure
+hold on
+Sim = S.mapaccum(100);
+plot(y(1,:),'ro')
+plot(y(2,:),'bo')
+sim = full(Sim([1;1],p_opt_GGN)); 
+plot(sim(1,:),'r','linewidth',3);
+plot(sim(2,:),'b','linewidth',3);
