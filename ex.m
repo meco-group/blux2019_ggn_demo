@@ -41,7 +41,9 @@ x_next = [(x(1)-alpha*x(1)*x(2))/(1+gamma*x(1));
           (x(2)+ beta*x(1)*x(2))/(1+delta*x(2))];
 
 % System dynamics: R^2 (state) x R^4 (parameter) -> R^2 (state at next)
-S = Function('S',{x,p},{x_next})
+S = Function('S',{x,p},{x_next},{'x','p'},{'x_next'})
+
+%%
 
 X = MX.sym('X',2,Ns+1); % Symbolic state trajectory, in R^(2 x Ns+1)
 
@@ -65,6 +67,8 @@ figure
 spy(jacobian(G(w),w))
 title('Constraint Jacobian: R^{nw} -> R^{2Ns x nw}')
 JG = Function('JG',{w},{ jacobian(G(w),w) });
+
+% Q1: Explain the structure of JG
 
 %% Initial w
 
@@ -126,12 +130,14 @@ p_opt_SCP = wk(1:4);
 phi  = Function('phi',{w},{ sum(sqrt(sigma^2+E(w).^2))/(2*Ns) });
 
 % Jacobian of phi: R^nw -> R^(1 x nw)
-Jphi = Function('Jphi',{w},{ jacobian(phi(w),w) }); % redact
+Jphi = Function('Jphi',{w},{ jacobian(phi(w),w) });
 
 figure
 spy(hessian(phi(w),w))
-title('Hessian of phi: R^{nw} -> R^{nw x nw}')
-Hphi = Function('Hphi',{w},{ hessian(phi(w),w) }); % redact
+title('Hessian of phi: R^{nw} -> S^{nw x nw}')
+Hphi = Function('Hphi',{w},{ hessian(phi(w),w) });
+
+% Q2: Explain the structure of Hphi
 
 wk = winit;
 for k=1:10
@@ -140,10 +146,9 @@ for k=1:10
     % Decision variables of quadratic problem
     dw = opti.variable(numel(w));
 
-    % Quadratic approximation to objective
-    obj_lin = phi(wk)+Jphi(wk)*dw+1/2*dw'*Hphi(wk)*dw;  % redact
-    opti.minimize(obj_lin); % redact
-
+    error('Fill in the gap here');
+    %opti.minimize(...);
+ 
     % Linear equality constraints (cfr. multiple shooting)
     G_lin = G(wk)+JG(wk)*dw;
     opti.subject_to( G_lin==0 );
